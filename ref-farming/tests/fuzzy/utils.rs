@@ -90,7 +90,7 @@ pub fn to_va(a: AccountId) -> ValidAccountId {
 }
 
 pub fn prepair_env(
-) -> (UserAccount, ContractAccount<Farming>, ContractAccount<TestRef>, Vec<Operator>) {
+) -> (UserAccount, UserAccount, ContractAccount<Farming>, ContractAccount<TestRef>, Vec<Operator>) {
 
     let root = init_simulator(None);
 
@@ -125,6 +125,12 @@ pub fn prepair_env(
     add_liqudity(&farmer_stake, &pool, &token1, &token2, 0);
     add_liqudity(&farmer_unstake, &pool, &token1, &token2, 0);
     add_liqudity(&farmer_claim, &pool, &token1, &token2, 0);
+    call!(
+        farmer_stake,
+        pool.add_liquidity(0, vec![to_yocto(&(10 * OPERATION_NUM).to_string()).into(), to_yocto(&(10 * OPERATION_NUM).to_string()).into()], None),
+        deposit = to_yocto("0.01")
+    )
+    .assert_success();
 
     println!("----->> Create farm.");
     let farm_id = FARM_ID.to_string();
@@ -166,7 +172,7 @@ pub fn prepair_env(
     root.borrow_runtime().current_block().block_height, 
     root.borrow_runtime().current_block().block_timestamp);
 
-    (root, farming, pool, vec![Operator{user: farmer_stake, preference: Preference::Stake}, Operator{user: farmer_unstake, preference: Preference::Unstake}, Operator{user: farmer_claim, preference: Preference::Claim}])
+    (root, owner, farming, pool, vec![Operator{user: farmer_stake, preference: Preference::Stake}, Operator{user: farmer_unstake, preference: Preference::Unstake}, Operator{user: farmer_claim, preference: Preference::Claim}])
 }
 
 pub fn add_liqudity(
@@ -176,8 +182,8 @@ pub fn add_liqudity(
     token2: &ContractAccount<TestToken>, 
     pool_id: u64,
 ) {
-    mint_token(&token1, user, to_yocto("1000"));
-    mint_token(&token2, user, to_yocto("1000"));
+    mint_token(&token1, user, to_yocto(&(100 * OPERATION_NUM).to_string()));
+    mint_token(&token2, user, to_yocto(&(100 * OPERATION_NUM).to_string()));
     call!(
         user,
         pool.storage_deposit(None, None),
@@ -186,13 +192,13 @@ pub fn add_liqudity(
     .assert_success();
     call!(
         user,
-        token1.ft_transfer_call(to_va(swap()), to_yocto("1000").into(), None, "".to_string()),
+        token1.ft_transfer_call(to_va(swap()), to_yocto(&(100 * OPERATION_NUM).to_string()).into(), None, "".to_string()),
         deposit = 1
     )
     .assert_success();
     call!(
         user,
-        token2.ft_transfer_call(to_va(swap()), to_yocto("1000").into(), None, "".to_string()),
+        token2.ft_transfer_call(to_va(swap()), to_yocto(&(100 * OPERATION_NUM).to_string()).into(), None, "".to_string()),
         deposit = 1
     )
     .assert_success();
@@ -310,7 +316,6 @@ pub fn assert_farming(
     unclaimed_reward: u128,
     beneficiary_reward: u128,
 ) {
-    println!("1212121----{:?}", farm_info);
     assert_eq!(farm_info.farm_status, farm_status);
     assert_eq!(farm_info.total_reward.0, total_reward);
     assert_eq!(farm_info.cur_round, cur_round);

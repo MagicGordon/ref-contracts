@@ -1,5 +1,5 @@
 use near_sdk_sim::{
-    view, ContractAccount, UserAccount,to_yocto
+    view, call, ContractAccount, UserAccount,to_yocto
 };
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
@@ -16,8 +16,12 @@ use fuzzy::{
     constant::*
 };
 
+pub fn get_operator<'a>(rng: &mut Pcg32, users: &'a Vec<Operator>) -> &'a Operator{
+    let user_index = rng.gen_range(0..users.len());
+    &users[user_index]
+}
+
 pub fn do_operation(ctx: &mut FarmInfo, rng: &mut Pcg32, root: &UserAccount, operator: &Operator, farming :&ContractAccount<Farming>, pool :&ContractAccount<TestRef>){
-    // println!("current stable pool info: {:?}", view!(pool.get_pool(0)).unwrap_json::<PoolInfo>());
     println!("seedinfo -- {:?}", view!(farming.get_seed_info(format!("{}@0", pool.account_id()))).unwrap_json::<SeedInfo>());
     println!("farminfo -- {:?}", view!(farming.get_farm(FARM_ID.to_string())).unwrap_json::<FarmInfo>());
     match operator.preference{
@@ -37,7 +41,12 @@ pub fn do_operation(ctx: &mut FarmInfo, rng: &mut Pcg32, root: &UserAccount, ope
     root.borrow_runtime().current_block().block_height, 
     root.borrow_runtime().current_block().block_timestamp);
     
-    ctx.unclaimed_reward.0 += to_yocto("1");
+    if view!(farming.get_seed_info(format!("{}@0", pool.account_id()))).unwrap_json::<SeedInfo>().amount.0 == 0{
+        ctx.claimed_reward.0 += to_yocto("1");
+        ctx.beneficiary_reward.0 += to_yocto("1");
+    }else{
+        ctx.unclaimed_reward.0 += to_yocto("1");
+    }
 }
 
 
@@ -62,17 +71,23 @@ fn test_fuzzy(){
         println!("current seed : {}", seed);
         println!("*********************************************");
 
-        let (root, farming, pool, users) = prepair_env();
+        let (root, owner, farming, pool, users) = prepair_env();
 
         let mut rng = Pcg32::seed_from_u64(seed as u64);
         let mut ctx = view!(farming.get_farm(FARM_ID.to_string())).unwrap_json::<FarmInfo>().clone();
         for i in 0..OPERATION_NUM{
-            let operator = users.choose(&mut rand::thread_rng()).unwrap();
+            let operator = get_operator(&mut rng, &users);
             println!("NO.{} : {:?}", i, operator);
-            println!("ctx : {:?}", ctx);
             do_operation(&mut ctx, &mut rng, &root, operator, &farming, &pool);
         }
         let farm_info = show_farminfo(&farming, FARM_ID.to_string(), false);
+        assert_farming(&farm_info, "Ended".to_string(), to_yocto(&OPERATION_NUM.to_string()), ctx.cur_round, ctx.last_round, ctx.claimed_reward.0, ctx.unclaimed_reward.0, ctx.beneficiary_reward.0);
+        let out_come = call!(
+            owner,
+            farming.force_clean_farm(FARM_ID.to_string()),
+            deposit = 0
+        );
+        out_come.assert_success();
         assert_farming(&farm_info, "Ended".to_string(), to_yocto(&OPERATION_NUM.to_string()), ctx.cur_round, ctx.last_round, ctx.claimed_reward.0, ctx.unclaimed_reward.0, ctx.beneficiary_reward.0);
     }
 }

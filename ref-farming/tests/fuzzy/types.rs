@@ -6,6 +6,12 @@ use near_sdk_sim::{
 };
 use near_sdk::json_types::U128;
 use test_token::ContractContract as TestToken;
+use uint::construct_uint;
+
+construct_uint! {
+    /// 256-bit unsigned integer.
+    pub struct U256(4);
+}
 
 #[derive(Debug)]
 pub enum Preference {

@@ -15,21 +15,17 @@ pub fn do_claim(ctx: &mut FarmInfo, rng: &mut Pcg32, root: &UserAccount, operato
         None => 0
     };
     println!("current farmer stake : {}", stake_count);
-    let unclaim = show_unclaim(&farming, operator.user.account_id(), farm_id.clone(), false);
-    ctx.last_round = ctx.cur_round;
-    ctx.claimed_reward.0 += unclaim.0;
-    ctx.unclaimed_reward.0 -= unclaim.0;
+    
     if stake_count != 0 {
+        let unclaim = show_unclaim(&farming, operator.user.account_id(), farm_id.clone(), false);
+        ctx.claimed_reward.0 += unclaim.0;
+        ctx.unclaimed_reward.0 -= unclaim.0;
         let out_come = call!(
             operator.user,
             farming.claim_reward_by_farm(farm_id.clone()),
             deposit = 0
         );
         out_come.assert_success();
-
-        let farm_info = show_farminfo(&farming, farm_id.clone(), false);
-        
-        assert_farming(&farm_info, "Running".to_string(), to_yocto(&OPERATION_NUM.to_string()), ctx.cur_round, ctx.last_round, ctx.claimed_reward.0, ctx.unclaimed_reward.0, ctx.beneficiary_reward.0);
     } else {
         println!("----->> {} staking lpt.", operator.user.account_id());
         let out_come = call!(
@@ -42,11 +38,10 @@ pub fn do_claim(ctx: &mut FarmInfo, rng: &mut Pcg32, root: &UserAccount, operato
         operator.user.account_id(),
         root.borrow_runtime().current_block().block_height, 
         root.borrow_runtime().current_block().block_timestamp);
-        let farm_info = show_farminfo(&farming, farm_id.clone(), false);
-
-        ctx.last_round = ctx.cur_round;
-        assert_farming(&farm_info, "Running".to_string(), to_yocto(&OPERATION_NUM.to_string()), ctx.cur_round, ctx.last_round, ctx.claimed_reward.0, ctx.unclaimed_reward.0, ctx.beneficiary_reward.0);
     }
+    ctx.last_round = ctx.cur_round;
+    let farm_info = show_farminfo(&farming, farm_id.clone(), false);
+    assert_farming(&farm_info, "Running".to_string(), to_yocto(&OPERATION_NUM.to_string()), ctx.cur_round, ctx.last_round, ctx.claimed_reward.0, ctx.unclaimed_reward.0, ctx.beneficiary_reward.0);
     ctx.cur_round += 1;
 
 }
