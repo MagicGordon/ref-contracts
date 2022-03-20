@@ -133,6 +133,7 @@ fn storage_scenario_02() {
             vec![100000*ONE_DAI, 100000*ONE_USDT, 100000*ONE_USDC],
             vec![18, 6, 6],
             25,
+            1600,
             10000,
         );
     let tokens = &tokens;

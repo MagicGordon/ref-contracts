@@ -214,6 +214,10 @@ pub fn pool_share_price(
 
 //************************************
 
+pub fn usn() -> AccountId {
+    "usn001".to_string()
+}
+
 pub fn dai() -> AccountId {
     "dai001".to_string()
 }
@@ -339,6 +343,7 @@ pub fn setup_stable_pool_with_liquidity(
     amounts: Vec<u128>,
     decimals: Vec<u8>,
     pool_fee: u32,
+    exchange_fee: u32,
     amp: u64,
 ) -> (
     UserAccount,
@@ -353,7 +358,7 @@ pub fn setup_stable_pool_with_liquidity(
         contract_id: swap(),
         bytes: &EXCHANGE_WASM_BYTES,
         signer_account: root,
-        init_method: new(owner.valid_account_id(), 1600, 400)
+        init_method: new(owner.valid_account_id(), exchange_fee, 400)
     );
 
     let mut token_contracts: Vec<ContractAccount<TestToken>> = vec![];

@@ -454,6 +454,7 @@ fn instant_swap_scenario_04() {
             vec![100000*ONE_DAI, 100000*ONE_USDT, 100000*ONE_USDC],
             vec![18, 6, 6],
             25,
+            1600,
             10000,
         );
     let tokens = &tokens;
@@ -494,4 +495,57 @@ fn instant_swap_scenario_04() {
     assert!(get_storage_balance(&pool, user.valid_account_id()).is_none());
     assert_eq!(balance_of(&token_in, &user.account_id), 8*ONE_DAI);
     assert_eq!(balance_of(&token_out, &user.account_id), 997499);
+}
+
+#[test]
+fn instant_swap_scenario_05() {
+    const ONE_USN: u128 = 1000000000000000000;
+    const ONE_USDT: u128 = 1000000;
+    let (root, owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            vec![100000*ONE_USN, 100000*ONE_USDT],
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    let user = root.create_user("user".to_string(), to_yocto("100"));
+    let token_in = &tokens[0];
+    let token_out = &tokens[1];
+    call!(user, token_in.mint(user.valid_account_id(), U128(10*ONE_USN))).assert_success();
+
+    println!("Case 0501: non-registered user stable swap but not registered in token2");
+    let action = pack_action(0, &tokens[0].account_id(), &tokens[1].account_id(), None, 1);
+    let out_come = direct_swap(&user, &tokens[0], vec![action], 1*ONE_USN);
+    out_come.assert_success();
+    assert_eq!(get_error_count(&out_come), 1);
+    assert!(get_error_status(&out_come)
+        .contains("Smart contract panicked: The account user is not registered"));
+    assert!(get_storage_balance(&pool, user.valid_account_id()).is_none());
+    assert_eq!(balance_of(&tokens[0], &user.account_id), 9*ONE_USN);
+
+    assert_eq!(
+        get_deposits(&pool, owner.valid_account_id())
+            .get(&token_out.account_id())
+            .unwrap()
+            .0,
+            999499
+    );
+
+    println!("Case 0502: non-registered user stable swap");
+    call!(
+        user,
+        token_out.storage_deposit(None, None),
+        deposit = to_yocto("1")
+    )
+    .assert_success();
+    let action = pack_action(0, &tokens[0].account_id(), &tokens[1].account_id(), None, 1);
+    let out_come = direct_swap(&user, &tokens[0], vec![action], 1*ONE_USN);
+    out_come.assert_success();
+    assert_eq!(get_error_count(&out_come), 0);
+    assert!(get_storage_balance(&pool, user.valid_account_id()).is_none());
+    assert_eq!(balance_of(&token_in, &user.account_id), 8*ONE_USN);
+    assert_eq!(balance_of(&token_out, &user.account_id), 999499);
 }

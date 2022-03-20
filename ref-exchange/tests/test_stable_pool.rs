@@ -13,6 +13,7 @@ pub mod common;
 
 
 const ONE_LPT: u128 = 1000000000000000000;
+const ONE_USN: u128 = 1000000000000000000;
 const ONE_DAI: u128 = 1000000000000000000;
 const ONE_USDT: u128 = 1000000;
 const ONE_USDC: u128 = 1000000;
@@ -26,6 +27,7 @@ fn sim_stable_swap() {
             vec![100000*ONE_DAI, 100000*ONE_USDT, 100000*ONE_USDC],
             vec![18, 6, 6],
             25,
+            1600,
             10000,
         );
     let tokens = &tokens;
@@ -126,6 +128,7 @@ fn sim_stable_lp() {
             vec![100000*ONE_DAI, 100000*ONE_USDT, 100000*ONE_USDC],
             vec![18, 6, 6],
             25,
+            1600,
             10000,
         );
     let tokens = &tokens;
@@ -336,6 +339,7 @@ fn sim_stable_max_liquidity() {
             ],
             vec![18, 6, 6, 18, 6, 6, 18, 6, 6],
             25,
+            1600,
             10000,
         );
     let tokens = &tokens;
@@ -366,4 +370,830 @@ fn sim_stable_max_liquidity() {
     assert_eq!(mft_total_supply(&pool, ":0"), 900000900000000000000000000000);
     let last_share_price = pool_share_price(&pool, 0);
     println!("share_price: {}", last_share_price);
+}
+
+#[test]
+fn sim_stable_swap_dual() {
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            vec![100000*ONE_USN, 100000*ONE_USDT],
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(100000*ONE_USN), U128(100000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(200000*ONE_LPT),
+        }
+    );
+    assert_eq!(
+        view!(pool.mft_metadata(":0".to_string()))
+            .unwrap_json::<FungibleTokenMetadata>()
+            .name,
+        "ref-pool-0"
+    );
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(root.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+        200000*ONE_LPT
+    );
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    let balances = balances.values().cloned().collect::<Vec<_>>();
+    assert_eq!(balances, vec![U128(0), U128(0)]);
+
+    let c = tokens.get(0).unwrap();
+    call!(
+        root,
+        c.ft_transfer_call(pool.valid_account_id(), U128(ONE_USN), None, "".to_string()),
+        deposit = 1
+    )
+    .assert_success();
+
+    let out_come = call!(
+        root,
+        pool.swap(
+            vec![SwapAction {
+                pool_id: 0,
+                token_in: usn(),
+                amount_in: Some(U128(ONE_USN)),
+                token_out: usdt(),
+                min_amount_out: U128(1)
+            }],
+            None
+        ),
+        deposit = 1
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    assert_eq!(balances[&usn()].0, 0);
+    assert_eq!(balances[&usdt()].0, 999499);
+
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(100001*ONE_USN), U128(99999*ONE_USDT+500)],
+            total_fee: 5,
+            shares_total_supply: U128(200000*ONE_LPT + 119999999771463),
+        }
+    );
+}
+
+#[test]
+fn sim_stable_lp_dual() {
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            vec![100000*ONE_USN, 100000*ONE_USDT],
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    let last_share_price = pool_share_price(&pool, 0);
+    let last_lpt_supply = mft_total_supply(&pool, ":0");
+
+    // add more liquidity with balanced tokens
+    let user1 = root.create_user("user1".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user1, &tokens[0], &pool, 500*ONE_USN);
+    mint_and_deposit_token(&user1, &tokens[1], &pool, 500*ONE_USDT);
+    let out_come = call!(
+        user1,
+        pool.add_stable_liquidity(0, vec![U128(500*ONE_USN), U128(500*ONE_USDT)], U128(1)),
+        deposit = to_yocto("0.0007")
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply + 1000*ONE_LPT);
+    let last_lpt_supply = last_lpt_supply + 1000*ONE_LPT;
+
+    // remove by shares
+    let out_come = call!(
+        user1,
+        pool.remove_liquidity(0, U128(300*ONE_LPT), vec![U128(1*ONE_USN), U128(1*ONE_USDT)]),
+        deposit = 1 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 700*ONE_LPT);
+    let balances = view!(pool.get_deposits(user1.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    assert_eq!(balances[&usn()].0, 150*ONE_USN);
+    assert_eq!(balances[&usdt()].0, 150*ONE_USDT);
+    assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply - 300*ONE_LPT);
+    let last_lpt_supply = last_lpt_supply - 300*ONE_LPT;
+
+    // add more liquidity with imba tokens
+    let user2 = root.create_user("user2".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user2, &tokens[0], &pool, 100*ONE_USN);
+    mint_and_deposit_token(&user2, &tokens[1], &pool, 200*ONE_USDT);
+    let out_come = call!(
+        user2,
+        pool.add_stable_liquidity(0, vec![U128(100*ONE_USN), U128(200*ONE_USDT)], U128(1)),
+        deposit = to_yocto("0.0014")  // 0.0007 for one lp and double it for admin fee
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(100450*ONE_USN), U128(100550*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(200700*ONE_LPT+299979948283512476945+4000000001027044),
+        }
+    );
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 700*ONE_LPT);
+    assert_eq!(mft_balance_of(&pool, ":0", &user2.account_id()), 299979948283512476945);
+    assert!(pool_share_price(&pool, 0) > last_share_price);
+    let last_share_price = pool_share_price(&pool, 0);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply + 299979948283512476945 + 4000000001027044);
+    let last_lpt_supply = last_lpt_supply + 299979948283512476945 + 4000000001027044;
+
+    // remove by tokens
+    let out_come = call!(
+        user1,
+        pool.remove_liquidity_by_tokens(0, vec![U128(1*ONE_USN), U128(500*ONE_USDT)], U128(550*ONE_LPT)),
+        deposit = 1 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 198899516063555823367);
+    let balances = view!(pool.get_deposits(user1.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    assert_eq!(balances[&usn()].0, 151*ONE_USN);
+    assert_eq!(balances[&usdt()].0, 650*ONE_USDT);
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(100449*ONE_USN), U128(100050*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(last_lpt_supply-501100483936444176633+19950028329285782),
+        }
+    );
+
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 700*ONE_LPT-501100483936444176633);
+    assert_eq!(mft_balance_of(&pool, ":0", &user2.account_id()), 299979948283512476945);
+    assert!(pool_share_price(&pool, 0) > last_share_price);
+    let last_share_price = pool_share_price(&pool, 0);
+    let last_lpt_supply = last_lpt_supply - 501100483936444176633 + 19950028329285782;
+
+    // tansfer some to other
+    let out_come = call!(
+        user1,
+        pool.mft_transfer(":0".to_string(), user2.valid_account_id(), U128(100*ONE_LPT), None),
+        deposit = 1 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 600*ONE_LPT-501100483936444176633);
+    assert_eq!(mft_balance_of(&pool, ":0", &user2.account_id()), 399979948283512476945);
+    assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply);
+
+    // other remove by shares trigger slippage
+    let out_come = call!(
+        user2,
+        pool.remove_liquidity(0, U128(200*ONE_LPT), vec![U128(1*ONE_USN), U128(198*ONE_USDT)]),
+        deposit = 1 
+    );
+    assert!(!out_come.is_ok());
+    let ex_status = format!("{:?}", out_come.promise_errors()[0].as_ref().unwrap().status());
+    // println!("ex_status: {}", ex_status);
+    assert!(ex_status.contains("E68: slippage error"));
+    assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply);
+
+    // other remove by tokens trigger slippage
+    let out_come = call!(
+        user2,
+        pool.remove_liquidity_by_tokens(0, vec![U128(1*ONE_USN), U128(198*ONE_USDT)], U128(100*ONE_LPT)),
+        deposit = 1 
+    );
+    assert!(!out_come.is_ok());
+    let ex_status = format!("{:?}", out_come.promise_errors()[0].as_ref().unwrap().status());
+    assert!(ex_status.contains("E68: slippage error"));
+    assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply);
+
+    // user2 remove by share
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 600*ONE_LPT-501100483936444176633);
+    assert_eq!(mft_balance_of(&pool, ":0", &user2.account_id()), 399979948283512476945);
+    let out_come = call!(
+        user2,
+        pool.remove_liquidity(0, U128(200*ONE_LPT), vec![U128(1*ONE_USN), U128(1*ONE_USDT)]),
+        deposit = 1 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 600*ONE_LPT-501100483936444176633);
+    assert_eq!(mft_balance_of(&pool, ":0", &user2.account_id()), 199979948283512476945);
+    assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply-200*ONE_LPT);
+    let last_lpt_supply = last_lpt_supply - 200*ONE_LPT;
+    
+    // user2 remove by tokens
+    let out_come = call!(
+        user2,
+        pool.remove_liquidity_by_tokens(0, vec![U128(98*ONE_USN), U128(0*ONE_USDT)], U128(99*ONE_LPT)),
+        deposit = 1 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(mft_balance_of(&pool, ":0", &user1.account_id()), 600*ONE_LPT-501100483936444176633);
+    // previous lpt - removed lpt
+    assert_eq!(mft_balance_of(&pool, ":0", &user2.account_id()), 199979948283512476945-98019158796189783720);
+    // last_lpt_supply - removed lpt + admin_fee_to_lpt
+    let last_lpt_supply = last_lpt_supply - 98019158796189783720 + 3912197232214595;
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply);
+    assert!(pool_share_price(&pool, 0) > last_share_price);
+    let last_share_price = pool_share_price(&pool, 0);
+    println!("share_price: {}", last_share_price);
+
+    // add massive liquidity (100 billion)
+    let user3 = root.create_user("user3".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user3, &tokens[0], &pool, 100_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user3, &tokens[1], &pool, 100_000_000_000*ONE_USDT);
+    let out_come = call!(
+        user3,
+        pool.add_stable_liquidity(0, vec![U128(100_000_000_000*ONE_USN), U128(100_000_000_000*ONE_USDT)], U128(1)),
+        deposit = to_yocto("0.0007") 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    // minted_user_lpt
+    assert_eq!(mft_balance_of(&pool, ":0", &user3.account_id()), 199999828785011819109856380949);
+    // last_lpt_supply + minted_user_lpt + admin_fee_to_lpt
+    let last_lpt_supply = last_lpt_supply + 199999828785011819109856380949 + 12012001003701739248703;
+    assert_eq!(mft_total_supply(&pool, ":0"), last_lpt_supply);
+    let last_share_price = pool_share_price(&pool, 0);
+    println!("share_price: {}", last_share_price);
+}
+
+#[test]
+fn sim_stable_max_liquidity_dual() {
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt(), 
+                "sun1".to_string(), "usdt1".to_string(), 
+                "sun2".to_string(), "usdt2".to_string(),
+                ],
+            vec![
+                100000*ONE_USN, 100000*ONE_USDT, 
+                100000*ONE_USN, 100000*ONE_USDT, 
+                100000*ONE_USN, 100000*ONE_USDT
+            ],
+            vec![18, 6, 18, 6, 18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+
+    // add massive liquidity (100 billion)
+    let user = root.create_user("user".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user, &tokens[0], &pool, 100_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user, &tokens[1], &pool, 100_000_000_000*ONE_USDT);
+    mint_and_deposit_token(&user, &tokens[2], &pool, 100_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user, &tokens[3], &pool, 100_000_000_000*ONE_USDT);
+    mint_and_deposit_token(&user, &tokens[4], &pool, 100_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user, &tokens[5], &pool, 100_000_000_000*ONE_USDT);
+    let out_come = call!(
+        user,
+        pool.add_stable_liquidity(0, vec![
+            U128(100_000_000_000*ONE_USN), U128(100_000_000_000*ONE_USDT),
+            U128(100_000_000_000*ONE_USN), U128(100_000_000_000*ONE_USDT),
+            U128(100_000_000_000*ONE_USN), U128(100_000_000_000*ONE_USDT)
+            ], U128(1)),
+        deposit = to_yocto("0.0007") 
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    assert_eq!(mft_balance_of(&pool, ":0", &user.account_id()), 600000000000000000000000000000);
+    assert_eq!(mft_total_supply(&pool, ":0"), 600000600000000000000000000000);
+    let last_share_price = pool_share_price(&pool, 0);
+    println!("share_price: {}", last_share_price);
+}
+
+#[test]
+fn sim_stable_swap_24() {
+    let amounts = vec![10_000_000*ONE_USN, 10_000_000*ONE_USDT];
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            amounts.clone(),
+            vec![18, 6],
+            5,
+            2000,
+            24,
+        );
+    let tokens = &tokens;
+
+    for (idx, amount) in amounts.clone().into_iter().enumerate() {
+        let c = tokens.get(idx).unwrap();
+        call!(
+            root,
+            c.ft_transfer_call(
+                pool.valid_account_id(), 
+                U128(amount * 2), 
+                None, 
+                "".to_string()
+            ),
+            deposit = 1
+        )
+        .assert_success();
+    }
+
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 24,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(10_000_000*ONE_USN), U128(10_000_000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(20_000_000*ONE_LPT),
+        }
+    );
+
+    let pool_info = view!(pool.get_pool(0)).unwrap_json::<PoolInfo>();
+    let usn_usdt = view!(pool.get_return(0, to_va(usn()), U128(ONE_USN), to_va(usdt()))).unwrap_json::<U128>().0;
+    let usdt_usn = view!(pool.get_return(0, to_va(usdt()), U128(ONE_USDT), to_va(usn()))).unwrap_json::<U128>().0;
+    println!("init, usn: {}, usdt: {}, 1 usn -> usdt: {}, 1 usdt -> usn: {}", pool_info.amounts[0].0, pool_info.amounts[1].0, usn_usdt, usdt_usn);
+
+    for i in 0..11{
+        let out_come = call!(
+            root,
+            pool.swap(
+                vec![SwapAction {
+                    pool_id: 0,
+                    token_in: usn(),
+                    amount_in: Some(U128(1_000_000*ONE_USN)),
+                    token_out: usdt(),
+                    min_amount_out: U128(1)
+                }],
+                None
+            ),
+            deposit = 1
+        );
+        out_come.assert_success();
+        let pool_info = view!(pool.get_pool(0)).unwrap_json::<PoolInfo>();
+        let usn_usdt = view!(pool.get_return(0, to_va(usn()), U128(ONE_USN), to_va(usdt()))).unwrap_json::<U128>().0;
+        let usdt_usn = view!(pool.get_return(0, to_va(usdt()), U128(ONE_USDT), to_va(usn()))).unwrap_json::<U128>().0;
+        println!("No. {}, usn: {}, usdt: {}, 1 usn -> usdt: {}, 1 usdt -> usn: {}", i, pool_info.amounts[0].0, pool_info.amounts[1].0, usn_usdt, usdt_usn);
+    }
+}
+
+#[test]
+fn sim_stable_swap_240() {
+    let amounts = vec![10_000_000*ONE_USN, 10_000_000*ONE_USDT];
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            amounts.clone(),
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    for (idx, amount) in amounts.clone().into_iter().enumerate() {
+        let c = tokens.get(idx).unwrap();
+        call!(
+            root,
+            c.ft_transfer_call(
+                pool.valid_account_id(), 
+                U128(amount * 2), 
+                None, 
+                "".to_string()
+            ),
+            deposit = 1
+        )
+        .assert_success();
+    }
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(10_000_000*ONE_USN), U128(10_000_000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(20_000_000*ONE_LPT),
+        }
+    );
+
+    let pool_info = view!(pool.get_pool(0)).unwrap_json::<PoolInfo>();
+    let usn_usdt = view!(pool.get_return(0, to_va(usn()), U128(ONE_USN), to_va(usdt()))).unwrap_json::<U128>().0;
+    let usdt_usn = view!(pool.get_return(0, to_va(usdt()), U128(ONE_USDT), to_va(usn()))).unwrap_json::<U128>().0;
+    println!("init, usn: {}, usdt: {}, 1 usn -> usdt: {}, 1 usdt -> usn: {}", pool_info.amounts[0].0, pool_info.amounts[1].0, usn_usdt, usdt_usn);
+
+    for i in 0..11{
+        let out_come = call!(
+            root,
+            pool.swap(
+                vec![SwapAction {
+                    pool_id: 0,
+                    token_in: usn(),
+                    amount_in: Some(U128(1_000_000*ONE_USN)),
+                    token_out: usdt(),
+                    min_amount_out: U128(1)
+                }],
+                None
+            ),
+            deposit = 1
+        );
+        out_come.assert_success();
+        let pool_info = view!(pool.get_pool(0)).unwrap_json::<PoolInfo>();
+        let usn_usdt = view!(pool.get_return(0, to_va(usn()), U128(ONE_USN), to_va(usdt()))).unwrap_json::<U128>().0;
+        let usdt_usn = view!(pool.get_return(0, to_va(usdt()), U128(ONE_USDT), to_va(usn()))).unwrap_json::<U128>().0;
+        println!("No. {}, usn: {}, usdt: {}, 1 usn -> usdt: {}, 1 usdt -> usn: {}", i, pool_info.amounts[0].0, pool_info.amounts[1].0, usn_usdt, usdt_usn);
+    }
+}
+
+#[test]
+fn sim_stable_swap_2400() {
+    let amounts = vec![10000000*ONE_USN, 10000000*ONE_USDT];
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            amounts.clone(),
+            vec![18, 6],
+            5,
+            2000,
+            2400,
+        );
+    let tokens = &tokens;
+    for (idx, amount) in amounts.clone().into_iter().enumerate() {
+        let c = tokens.get(idx).unwrap();
+        call!(
+            root,
+            c.ft_transfer_call(
+                pool.valid_account_id(), 
+                U128(amount * 2), 
+                None, 
+                "".to_string()
+            ),
+            deposit = 1
+        )
+        .assert_success();
+    }
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 2400,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(10_000_000*ONE_USN), U128(10_000_000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(20_000_000*ONE_LPT),
+        }
+    );
+
+    let pool_info = view!(pool.get_pool(0)).unwrap_json::<PoolInfo>();
+    let usn_usdt = view!(pool.get_return(0, to_va(usn()), U128(ONE_USN), to_va(usdt()))).unwrap_json::<U128>().0;
+    let usdt_usn = view!(pool.get_return(0, to_va(usdt()), U128(ONE_USDT), to_va(usn()))).unwrap_json::<U128>().0;
+    println!("init, usn: {}, usdt: {}, 1 usn -> usdt: {}, 1 usdt -> usn: {}", pool_info.amounts[0].0, pool_info.amounts[1].0, usn_usdt, usdt_usn);
+
+    for i in 0..11{
+        let out_come = call!(
+            root,
+            pool.swap(
+                vec![SwapAction {
+                    pool_id: 0,
+                    token_in: usn(),
+                    amount_in: Some(U128(1_000_000*ONE_USN)),
+                    token_out: usdt(),
+                    min_amount_out: U128(1)
+                }],
+                None
+            ),
+            deposit = 1
+        );
+        out_come.assert_success();
+        let pool_info = view!(pool.get_pool(0)).unwrap_json::<PoolInfo>();
+        let usn_usdt = view!(pool.get_return(0, to_va(usn()), U128(ONE_USN), to_va(usdt()))).unwrap_json::<U128>().0;
+        let usdt_usn = view!(pool.get_return(0, to_va(usdt()), U128(ONE_USDT), to_va(usn()))).unwrap_json::<U128>().0;
+        println!("No. {}, usn: {}, usdt: {}, 1 usn -> usdt: {}, 1 usdt -> usn: {}", i, pool_info.amounts[0].0, pool_info.amounts[1].0, usn_usdt, usdt_usn);
+    }
+}
+
+#[test]
+fn sim_stable_swap_100b() {
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            vec![100_000_000_000*ONE_USN, 100_000_000_000*ONE_USDT],
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(100_000_000_000*ONE_USN), U128(100_000_000_000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(200_000_000_000*ONE_LPT),
+        }
+    );
+    
+    let user1 = root.create_user("user1".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user1, &tokens[0], &pool, 100_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user1, &tokens[1], &pool, 100_000_000_000*ONE_USDT);
+    let out_come = call!(
+        user1,
+        pool.add_stable_liquidity(0, vec![U128(100_000_000_000*ONE_USN), U128(100_000_000_000*ONE_USDT)], U128(1)),
+        deposit = to_yocto("0.0007")
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    println!("-=-=====-=-=   {}", pool_share_price(&pool, 0));
+    // assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), 400_000_000_000*ONE_LPT);
+
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(root.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+            200_000_000_000*ONE_LPT
+    );
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(user1.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+            200_000_000_000*ONE_LPT
+    );
+    
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    let balances = balances.values().cloned().collect::<Vec<_>>();
+    assert_eq!(balances, vec![U128(0), U128(0)]);
+
+    let c = tokens.get(0).unwrap();
+    call!(
+        root,
+        c.ft_transfer_call(pool.valid_account_id(), U128(ONE_USN), None, "".to_string()),
+        deposit = 1
+    )
+    .assert_success();
+
+    let out_come = call!(
+        root,
+        pool.swap(
+            vec![SwapAction {
+                pool_id: 0,
+                token_in: usn(),
+                amount_in: Some(U128(ONE_USN)),
+                token_out: usdt(),
+                min_amount_out: U128(1)
+            }],
+            None
+        ),
+        deposit = 1
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    assert_eq!(balances[&usn()].0, 0);
+    assert_eq!(balances[&usdt()].0, 999499);
+
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(200_000_000_001*ONE_USN), U128(199_999_999_999*ONE_USDT+500)],
+            total_fee: 5,
+            shares_total_supply: U128(400_000_000_000*ONE_LPT + 119999999999999),
+        }
+    );
+}
+
+#[test]
+fn sim_stable_swap_500b() {
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            vec![500_000_000_000*ONE_USN, 500_000_000_000*ONE_USDT],
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(500_000_000_000*ONE_USN), U128(500_000_000_000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(1_000_000_000_000*ONE_LPT),
+        }
+    );
+    
+    let user1 = root.create_user("user1".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user1, &tokens[0], &pool, 500_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user1, &tokens[1], &pool, 500_000_000_000*ONE_USDT);
+    let out_come = call!(
+        user1,
+        pool.add_stable_liquidity(0, vec![U128(500_000_000_000*ONE_USN), U128(500_000_000_000*ONE_USDT)], U128(1)),
+        deposit = to_yocto("0.0007")
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    println!("-=-=====-=-=   {}", pool_share_price(&pool, 0));
+    // assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), 2_000_000_000_000*ONE_LPT);
+
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(root.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+            1_000_000_000_000*ONE_LPT
+    );
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(user1.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+            1_000_000_000_000*ONE_LPT
+    );
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    let balances = balances.values().cloned().collect::<Vec<_>>();
+    assert_eq!(balances, vec![U128(0), U128(0)]);
+
+    let c = tokens.get(0).unwrap();
+    call!(
+        root,
+        c.ft_transfer_call(pool.valid_account_id(), U128(ONE_USN), None, "".to_string()),
+        deposit = 1
+    )
+    .assert_success();
+
+    let out_come = call!(
+        root,
+        pool.swap(
+            vec![SwapAction {
+                pool_id: 0,
+                token_in: usn(),
+                amount_in: Some(U128(ONE_USN)),
+                token_out: usdt(),
+                min_amount_out: U128(1)
+            }],
+            None
+        ),
+        deposit = 1
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    assert_eq!(balances[&usn()].0, 0);
+    assert_eq!(balances[&usdt()].0, 999499);
+
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(1_000_000_000_001*ONE_USN), U128(999_999_999_999*ONE_USDT+500)],
+            total_fee: 5,
+            shares_total_supply: U128(2_000_000_000_000*ONE_LPT + 119999999999999),
+        }
+    );
+}
+
+#[test]
+fn sim_stable_swap_1000b() {
+    let (root, _owner, pool, tokens) = 
+        setup_stable_pool_with_liquidity(
+            vec![usn(), usdt()],
+            vec![1_000_000_000_000*ONE_USN, 1_000_000_000_000*ONE_USDT],
+            vec![18, 6],
+            5,
+            2000,
+            240,
+        );
+    let tokens = &tokens;
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(1_000_000_000_000*ONE_USN), U128(1_000_000_000_000*ONE_USDT)],
+            total_fee: 5,
+            shares_total_supply: U128(2_000_000_000_000*ONE_LPT),
+        }
+    );
+    
+    let user1 = root.create_user("user1".to_string(), to_yocto("100"));
+    mint_and_deposit_token(&user1, &tokens[0], &pool, 1_000_000_000_000*ONE_USN);
+    mint_and_deposit_token(&user1, &tokens[1], &pool, 1_000_000_000_000*ONE_USDT);
+    let out_come = call!(
+        user1,
+        pool.add_stable_liquidity(0, vec![U128(1_000_000_000_000*ONE_USN), U128(1_000_000_000_000*ONE_USDT)], U128(1)),
+        deposit = to_yocto("0.0007")
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+    println!("-=-=====-=-=   {}", pool_share_price(&pool, 0));
+    // assert_eq!(pool_share_price(&pool, 0), last_share_price);
+    assert_eq!(mft_total_supply(&pool, ":0"), 4_000_000_000_000*ONE_LPT);
+
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(root.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+            2_000_000_000_000*ONE_LPT
+    );
+    assert_eq!(
+        view!(pool.mft_balance_of(":0".to_string(), to_va(user1.account_id.clone())))
+            .unwrap_json::<U128>()
+            .0,
+            2_000_000_000_000*ONE_LPT
+    );
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    let balances = balances.values().cloned().collect::<Vec<_>>();
+    assert_eq!(balances, vec![U128(0), U128(0)]);
+
+    let c = tokens.get(0).unwrap();
+    call!(
+        root,
+        c.ft_transfer_call(pool.valid_account_id(), U128(ONE_USN), None, "".to_string()),
+        deposit = 1
+    )
+    .assert_success();
+
+    let out_come = call!(
+        root,
+        pool.swap(
+            vec![SwapAction {
+                pool_id: 0,
+                token_in: usn(),
+                amount_in: Some(U128(ONE_USN)),
+                token_out: usdt(),
+                min_amount_out: U128(1)
+            }],
+            None
+        ),
+        deposit = 1
+    );
+    out_come.assert_success();
+    println!("{:#?}", get_logs(&out_come));
+
+    let balances = view!(pool.get_deposits(root.valid_account_id()))
+        .unwrap_json::<HashMap<AccountId, U128>>();
+    assert_eq!(balances[&usn()].0, 0);
+    assert_eq!(balances[&usdt()].0, 999499);
+
+    assert_eq!(
+        view!(pool.get_pool(0)).unwrap_json::<PoolInfo>(),
+        PoolInfo {
+            pool_kind: "STABLE_SWAP".to_string(),
+            amp: 240,
+            token_account_ids: tokens.into_iter().map(|x| x.account_id()).collect(),
+            amounts: vec![U128(2_000_000_000_001*ONE_USN), U128(1_999_999_999_999*ONE_USDT+500)],
+            total_fee: 5,
+            shares_total_supply: U128(4_000_000_000_000*ONE_LPT + 119999999999999),
+        }
+    );
 }
